@@ -1,0 +1,214 @@
+---
+title: "Reptiles de Costa Rica"
+format: 
+  dashboard:
+    orientation: columns
+---
+
+
+```{r}
+#| label: carga-paquetes
+
+
+library(tidyverse)
+library(plotly)
+library(DT)
+library(sf)
+library(leaflet)
+```
+
+
+```{r}
+#| label: carga-datos
+#| warning: false
+#| message: false
+
+
+regiones_socioeconomicas <-
+  st_read(
+    "regiones-socioeconomicas.gpkg",
+    quiet = TRUE
+  )
+
+registros <-
+  st_read(
+    "registros-reptiles.csv",
+    options = c(
+      "X_POSSIBLE_NAMES=decimalLongitude",
+      "Y_POSSIBLE_NAMES=decimalLatitude"
+    ),
+    quiet = TRUE
+  )
+st_crs(registros) <- 4326
+
+especies <-
+  read_delim(
+    "especies-reptiles.csv"
+  )
+```
+
+# Cantidades de registros de presencia en categorías de la Lista Roja y en clases taxonómicas
+
+## Column {width=45%}
+
+```{r}
+#| label: tabla-registros-x-categoria
+#| title: "Cantidad de registros de presencia por categoría de la Lista Roja"
+
+
+registros |>
+  st_drop_geometry() |>
+  left_join(especies, by = "species") |>
+  group_by(iucnRedListCategory) |>
+  summarize(n = n()) |>
+  replace_na(list(iucnRedListCategory = "Sin categoría")) |>
+  arrange(desc(n)) |>
+  datatable(
+    rownames = FALSE,
+    colnames = c("Categoría de la Lista Roja", "Cantidad de registros de presencia"),
+    options = list(
+      language = list(url = '//cdn.datatables.net/plug-ins/1.10.11/i18n/Spanish.json')
+    )
+  )
+```
+
+## Column {width=55%}
+
+```{r}
+#| label: grafico-registros-x-clase
+#| title: "Cantidad de registros de presencia en clases Squamata, Testudines y Crocodylia"
+
+
+grafico_ggplot2 <-
+  registros |>
+  st_drop_geometry() |>
+  filter(class == "Squamata" | class == "Testudines" | class == "Crocodylia") |>
+  group_by(class) |>
+  summarize(n = n()) |>
+  ggplot(aes(x = reorder(class,-n),
+             y = n)) +
+  geom_col() +
+  xlab("Clase") +
+  ylab("Cantidad de registros de presencia")
+
+ggplotly(grafico_ggplot2) |> config(locale = "es")
+```
+
+# Riqueza de especies de *Iguanidae* en regiones socioeconómicas
+
+```{r}
+#| label: union-registros-areas-iguanidae
+
+
+# Filtro por familia Iguanidae
+registros_iguanidae <-
+  registros |>
+  filter(family == "Iguanidae")
+
+# Unión espacial de registros de presencia y regiones socioeconómicas 
+# Esto agrega el identificador de región a los registros de presencia
+registros_union_regiones <-
+  st_join(
+    x = registros_iguanidae,
+    y = select(regiones_socioeconomicas, codigo),
+    join = st_within
+  )
+```
+
+
+```{r}
+#| label: conteo-especies-regiones
+
+
+# Conteo de la riqueza (cantidad) de especies en regiones socioeconómicas
+riqueza_especies_regiones <-
+  registros_union_regiones |>
+  st_drop_geometry() |>
+  group_by(codigo) |>
+  summarize(riqueza_especies_iguanidae = n_distinct(species, na.rm = TRUE))
+```
+
+
+```{r}
+#| label: union-regiones-riqueza
+
+
+# Unión (no espacial) de regiones socioexonómicas y riqueza de especies
+regiones_union_riqueza <-
+  left_join(
+    x = regiones_socioeconomicas,
+    y = dplyr::select(riqueza_especies_regiones, codigo, riqueza_especies_iguanidae),
+    by = "codigo"
+  ) |>
+  replace_na(list(riqueza_especies_reptiles = 0))
+```
+
+## Column {width=55%}
+
+```{r}
+#| label: mapa-riqueza-especies-regiones-socioeconómicas
+#| title: "Riqueza de especies de Iguanidae en regiones socioeconómicas"
+
+
+# Paleta de colores de riqueza de especies
+colores_riqueza_especies <-
+  colorNumeric(
+    palette = "Reds",
+    domain = regiones_union_riqueza$riqueza_especies_iguanidae,
+    na.color = "transparent"
+  )
+
+# Mapa
+leaflet() |>
+  addTiles(group = "OSM") |>
+  addProviderTiles(providers$CartoDB.Positron, group = "Carto Positron") |>
+  addPolygons(
+    data = regiones_union_riqueza,
+    fillColor = ~ colores_riqueza_especies(regiones_union_riqueza$riqueza_especies_iguanidae),
+    fillOpacity = 0.8,
+    color = "black",
+    popup = paste(
+      paste0("<strong>Región socioeconómica:</strong> ", regiones_union_riqueza$region),
+      paste0("<strong>Riqueza de especies:</strong> ", regiones_union_riqueza$riqueza_especies_iguanidae),
+      sep = "<br>"
+    ),
+    group = "Riqueza de especies"
+  ) |>
+  addLegend(
+    position = "bottomleft",
+    pal = colores_riqueza_especies,
+    values = regiones_union_riqueza$riqueza_especies_iguanidae,
+    group = "Riqueza de especies",
+    title = "Riqueza de especies"
+  ) |>
+  addLayersControl(
+    baseGroups = c(
+      "OSM", 
+      "Carto Positron"
+    ),
+    overlayGroups = c(
+      "Riqueza de especies"
+    )
+  )
+```
+
+## Column {width=45%}
+
+```{r}
+#| label: grafico-riqueza-especies-regiones-socioeconomicas
+#| title: "Riqueza de especies de Iguanidae en regiones socioeconómicas"
+
+
+grafico_ggplot2 <-
+  regiones_union_riqueza |>
+  st_drop_geometry() |>
+  ggplot(aes(x = reorder(region, riqueza_especies_iguanidae),
+             y = riqueza_especies_iguanidae)) +
+  geom_col() +
+  coord_flip() +
+  xlab("Región socioeconómica") +
+  ylab("Riqueza de especies")
+
+ggplotly(grafico_ggplot2) |> config(locale = "es")
+```
+
